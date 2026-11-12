@@ -318,6 +318,66 @@ window.__ModuleLoader__.load({
 			};
 		}
 
+		// --- Nav order -----------------------------------------------------------
+		// The settings nav is a list slot: the shell sorts entries by `order` and
+		// renders one <button> per entry, with no id attribute and no drag support.
+		// So the order is kept here as an array of section ids and replayed as CSS
+		// `order` on the buttons, which wins because the shell's own ordering is
+		// source order in a flex column. A drag rewrites this array.
+		//
+		// Ids, not labels: the label is translated, so "账号" would stop matching
+		// the moment the interface language changed.
+		const NAV_KEY = "dsh-moonstyle:nav-order";
+
+		function readNavOrder() {
+			try {
+				const raw = JSON.parse(window.localStorage.getItem(NAV_KEY) ?? "null");
+				// Anything but an array of strings is a corrupt entry, not a partial
+				// one: a single bad element would silently drop a whole section.
+				if (!Array.isArray(raw)) return [];
+				return raw.every((id) => typeof id === "string") ? raw : [];
+			} catch {
+				return [];
+			}
+		}
+
+		let navOrder = readNavOrder();
+		const navListeners = new Set();
+
+		function getNavOrder() {
+			return navOrder.slice();
+		}
+
+		function setNavOrder(next) {
+			navOrder = next.slice();
+			try {
+				window.localStorage.setItem(NAV_KEY, JSON.stringify(navOrder));
+			} catch {
+				// Full or blocked storage: the in-memory order still applies.
+			}
+			paintNav();
+			for (const listener of navListeners) listener(getNavOrder());
+		}
+
+		/** Back to the order the shell itself computes. */
+		function resetNavOrder() {
+			navOrder = [];
+			try {
+				window.localStorage.removeItem(NAV_KEY);
+			} catch {
+				// Blocked storage: clearing the memory value is still enough.
+			}
+			paintNav();
+			for (const listener of navListeners) listener(getNavOrder());
+		}
+
+		function subscribeNav(listener) {
+			navListeners.add(listener);
+			return () => {
+				navListeners.delete(listener);
+			};
+		}
+
 		// --- Stylesheet ----------------------------------------------------------
 		const STYLE_ID = "dsh-moonstyle-theme";
 
@@ -772,6 +832,9 @@ window.__ModuleLoader__.load({
 		/** Settings row chrome, matched to the shell's own rows. */
 		const ROW_CSS = [
 			".dml-row{border-bottom:.5px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:24px;padding:16px 0;display:flex}",
+			// The section has no title of its own: the shell already shows the nav
+			// label above the panel. This note is the only prose it needs.
+			".dml-note{color:var(--dsw-alias-label-tertiary);padding:8px 0 4px;font-size:12px;line-height:18px}",
 			".dml-text{min-width:0}",
 			".dml-title{color:var(--dsw-alias-label-primary);font-size:14px;line-height:20px}",
 			".dml-desc{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:12px;line-height:18px}",
@@ -786,6 +849,20 @@ window.__ModuleLoader__.load({
 			".dml-wrap>.dml-row:last-child{border-bottom:none}",
 		].join("\n");
 
+		// Drag affordance for the settings nav. Only the cursor and the grabbed
+		// state are ours: the row keeps the shell's own colours, radius and
+		// focus ring, so a theme change cannot leave a half-styled row behind.
+		const NAV_CSS = [
+			'[class*="_navList"]>[class*="_navCell"]{cursor:grab}',
+			// `:active` alone would fire on any press; this waits for the move.
+			"body.dml-nav-dragging,[class*='_navCell'].dml-nav-grab{cursor:grabbing}",
+			"body.dml-nav-dragging *{user-select:none}",
+			"[class*='_navCell'].dml-nav-grab{opacity:.55;transition:none}",
+			// The shell animates nothing here, so a reordered row snaps into place;
+			// that is what a drop should look like, and it keeps dragging cheap.
+			'[class*="_navList"]{user-select:none}',
+		].join("\n");
+
 		/**
 		 * The next block is concatenated after one that ends in `}`, so a newline is
 		 * required for legibility only — `}body{` is valid CSS but unreadable.
@@ -797,6 +874,7 @@ window.__ModuleLoader__.load({
 				chromeCss(current),
 				inkCss(current),
 				ROW_CSS,
+				NAV_CSS,
 				GHOST_CSS,
 				PROJECT_CSS,
 				titleCss(current),
@@ -813,11 +891,297 @@ window.__ModuleLoader__.load({
 			styleElement.textContent = styleSheet(prefs);
 		}
 
+		// --- Settings nav: drag to reorder ---------------------------------------
+		// The shell renders the nav as a flex list of <button>s, one per registered
+		// section, in the order of the `order` each plugin declared. The buttons
+		// carry no id and the shell has no drag support, so the user's order is
+		// replayed here as CSS `order` on those buttons, and a drag rewrites it.
+		//
+		// Rows are matched to ids positionally: the slot exposes its entries, and
+		// the shell sorts them by `order` with a stable sort, so entry i is row i.
+		// That keeps the mapping language-independent — matching on the visible
+		// label would break as soon as the interface language changed.
+		const NAV_ATTR = "data-dml-nav";
+		const NAV_DRAGGING = "dml-nav-dragging";
+		const NAV_ROWS = '[class*="_navList"]>[class*="_navCell"]';
+
+		/** Set by `apply`; null before the plugin has a slot registry. */
+		let navIdsFn = null;
+
+		/**
+		 * True while a drag is in flight. The shell re-renders rows on hover and
+		 * selection, and a repaint mid-drag would snap the row back under the
+		 * cursor, so painting steps aside until the pointer is released.
+		 */
+		let navDragging = false;
+
+		function navRows() {
+			if (typeof document === "undefined") return [];
+			return Array.from(document.querySelectorAll(NAV_ROWS));
+		}
+
+		function shellSectionIds() {
+			if (typeof navIdsFn !== "function") return [];
+			try {
+				return navIdsFn();
+			} catch {
+				// A slot registry that is mid-teardown: keep the current order.
+				return [];
+			}
+		}
+
+		/** Id of the row at `index`, or a positional placeholder if the lists differ. */
+		function rowId(ids, index) {
+			return ids[index] ?? "#" + index;
+		}
+
+		/**
+		 * Stamp every row with its section id and replay the stored order. Rows the
+		 * stored order does not mention (a section added since it was saved) keep
+		 * their shell position, after the ones it does.
+		 */
+		function paintNav() {
+			if (typeof document === "undefined") return;
+			if (navDragging) return;
+			const rows = navRows();
+			if (rows.length === 0) return;
+			const ids = shellSectionIds();
+			const known = new Map();
+			navOrder.forEach((id, index) => {
+				if (!known.has(id)) known.set(id, index);
+			});
+			rows.forEach((row, index) => {
+				const id = rowId(ids, index);
+				if (row.getAttribute(NAV_ATTR) !== id) row.setAttribute(NAV_ATTR, id);
+				const rank = known.has(id) ? known.get(id) : navOrder.length + index;
+				row.style.order = String(rank);
+			});
+		}
+
+		/** Rows in the order they are currently painted, i.e. the visual order. */
+		function visualRows(rows) {
+			return rows
+				.map((row) => ({ row, rank: Number(row.style.order) || 0 }))
+				.sort((a, b) => a.rank - b.rank)
+				.map((entry) => entry.row);
+		}
+
+		/**
+		 * Re-paint whenever the shell rebuilds the rail. The panel exists only while
+		 * settings is open, and the shell portals it straight onto `body`, so this
+		 * watches `body` for the modal to mount, then the panel subtree for row
+		 * rebuilds — and drops the subtree observer once the modal closes, since a
+		 * plugin that watched the whole body would re-query on every message render.
+		 */
+		function watchNav() {
+			if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+				return () => {};
+			}
+			let tree = null;
+			let watched = null;
+			let scheduled = false;
+
+			const schedule = () => {
+				// One microtask per batch: the shell re-renders rows one at a time,
+				// and a paint per mutation would interleave with its own passes.
+				if (scheduled) return;
+				scheduled = true;
+				queueMicrotask(() => {
+					scheduled = false;
+					paintNav();
+				});
+			};
+
+			const mount = () => {
+				const list = document.querySelector('[class*="_navList"]');
+				const panel = list?.closest('[class*="_panel"]') ?? null;
+				if (panel === watched) {
+					if (panel !== null) schedule();
+					return;
+				}
+				tree?.disconnect();
+				tree = null;
+				watched = panel;
+				if (panel === null) return;
+				tree = new MutationObserver(schedule);
+				tree.observe(panel, { childList: true, subtree: true });
+				schedule();
+			};
+
+			const mountWatch = new MutationObserver(mount);
+			mountWatch.observe(document.body, { childList: true });
+			mount();
+
+			return () => {
+				mountWatch.disconnect();
+				tree?.disconnect();
+				tree = null;
+				watched = null;
+			};
+		}
+
+		/**
+		 * Delegated drag on the nav column. Delegation, not per-row listeners: the
+		 * shell rebuilds the rows on every slot or locale change, and the buttons
+		 * would take their listeners with them.
+		 */
+		function installNavDrag() {
+			if (typeof document === "undefined") return () => {};
+
+			let drag = null;
+			let justDragged = false;
+
+			/**
+			 * `pointermove` is attached only between press and release. A
+			 * document-level move listener that lives forever would sit in the path
+			 * of every pointer move in the app, and this one has to be
+			 * non-passive to stop the shell from scrolling the rail mid-drag.
+			 */
+			const attachMove = () => {
+				document.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
+			};
+			const detachMove = () => {
+				document.removeEventListener("pointermove", onPointerMove, true);
+			};
+
+			const onPointerDown = (event) => {
+				if (event.button !== 0 || event.isPrimary === false) return;
+				// Touch keeps the rail's own scrolling: a drag there would fight the
+				// pan, and a mistimed fling would reorder sections by accident.
+				if (event.pointerType === "touch") return;
+				const target = event.target instanceof Element ? event.target : null;
+				const row = target?.closest(NAV_ROWS);
+				if (!(row instanceof HTMLElement)) return;
+				const list = row.parentElement;
+				if (list === null) return;
+				const rows = visualRows(navRows().filter((item) => item.parentElement === list));
+				if (rows.length < 2) return;
+				drag = {
+					row,
+					list,
+					rows,
+					// Captured before the drag so a cancelled drag can be told apart
+					// from one that actually moved a row.
+					before: rows.map((item) => item.getAttribute(NAV_ATTR) ?? "").join("\n"),
+					startX: event.clientX,
+					startY: event.clientY,
+					moved: false,
+					// `row`-direction is the horizontal layout the shell uses on
+					// platforms without a roomy window edge.
+					horizontal: getComputedStyle(list).flexDirection.includes("row"),
+				};
+				attachMove();
+			};
+
+			const onPointerMove = (event) => {
+				if (drag === null) return;
+				// The shell can rebuild the rows mid-drag (a locale or slot change).
+				// The captured nodes would then be detached, and reordering them
+				// would paint an order nobody can see.
+				if (!drag.row.isConnected || drag.rows.some((row) => !row.isConnected)) {
+					onPointerUp();
+					return;
+				}
+				// A release that happened outside the window never reaches us, which
+				// would leave this non-passive listener attached. `buttons` is the
+				// only reliable signal left at that point.
+				if (event.buttons === 0) {
+					onPointerUp();
+					return;
+				}
+				if (!drag.moved) {
+					const dx = event.clientX - drag.startX;
+					const dy = event.clientY - drag.startY;
+					// Four pixels is the threshold that keeps a click a click.
+					if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+					drag.moved = true;
+					navDragging = true;
+					document.body.classList.add(NAV_DRAGGING);
+					drag.row.classList.add("dml-nav-grab");
+				}
+				event.preventDefault();
+
+				const axis = drag.horizontal ? event.clientX : event.clientY;
+				const others = drag.rows.filter((row) => row !== drag.row);
+				const middle = (row) => {
+					const box = row.getBoundingClientRect();
+					return drag.horizontal ? box.left + box.width / 2 : box.top + box.height / 2;
+				};
+				let to = others.length;
+				for (let index = 0; index < others.length; index += 1) {
+					if (axis < middle(others[index])) {
+						to = index;
+						break;
+					}
+				}
+				const next = others.slice();
+				next.splice(to, 0, drag.row);
+				// Repaint only when something actually moved: `style.order` is a
+				// layout property, so writing it on every move would thrash.
+				if (next.every((row, index) => row === drag.rows[index])) return;
+				drag.rows = next;
+				next.forEach((row, index) => {
+					row.style.order = String(index);
+				});
+			};
+
+			const onPointerUp = () => {
+				detachMove();
+				if (drag === null) return;
+				const finished = drag;
+				drag = null;
+				navDragging = false;
+				finished.row.classList.remove("dml-nav-grab");
+				document.body.classList.remove(NAV_DRAGGING);
+				if (!finished.moved) return;
+				const ids = finished.rows.map((row) => row.getAttribute(NAV_ATTR) ?? "");
+				// A drag that ends back where it started changes nothing, so it must
+				// not save an order — and must not eat the click either, or the row
+				// would feel dead after a cancelled drag.
+				if (ids.join("\n") === finished.before) {
+					paintNav();
+					return;
+				}
+				// The pointerup that ends a drag is followed by a click on the row,
+				// which would switch sections. Swallow exactly that one.
+				justDragged = true;
+				window.setTimeout(() => {
+					justDragged = false;
+				}, 0);
+				if (ids.every((id) => id !== "")) setNavOrder(ids);
+				else paintNav();
+			};
+
+			const onClickCapture = (event) => {
+				if (!justDragged) return;
+				justDragged = false;
+				event.stopPropagation();
+				event.preventDefault();
+			};
+
+			document.addEventListener("pointerdown", onPointerDown, true);
+			document.addEventListener("pointerup", onPointerUp, true);
+			document.addEventListener("pointercancel", onPointerUp, true);
+			document.addEventListener("click", onClickCapture, true);
+			return () => {
+				document.removeEventListener("pointerdown", onPointerDown, true);
+				document.removeEventListener("pointerup", onPointerUp, true);
+				document.removeEventListener("pointercancel", onPointerUp, true);
+				document.removeEventListener("click", onClickCapture, true);
+				detachMove();
+			};
+		}
+
 		// --- Settings row --------------------------------------------------------
 		const NS = "settings.moonstyle";
 
 		const TEXT = {
 			zh: {
+				nav: "月光",
+				navDesc: "这一栏可以按住拖动，调到顺手的位置。顺序只影响这一台机器。",
+				navReset: "恢复默认顺序",
+				navResetDesc: "把左侧的设置栏目按回原生顺序，插件自己的顺序不受影响。",
+				navResetAction: "恢复",
 				layout: "消息形态",
 				layoutDesc: "你自己的消息显示为气泡，还是铺成正文。",
 				layoutBubble: "气泡",
@@ -842,6 +1206,11 @@ window.__ModuleLoader__.load({
 				rowTimeShow: "显示",
 			},
 			en: {
+				nav: "Moonlight",
+				navDesc: "Drag the settings rail to a position you like. The order stays on this machine.",
+				navReset: "Default order",
+				navResetDesc: "Put the sections back in the order the app chose. The plugin's own order is untouched.",
+				navResetAction: "Reset",
 				layout: "Message shape",
 				layoutDesc: "Show your own messages as a bubble, or as body text.",
 				layoutBubble: "Bubble",
@@ -938,17 +1307,19 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The four controls. State comes from the module-level preference store
-		 * rather than a slot store: the row and the stylesheet must agree on the
-		 * same value, and a single subscription is enough for both.
+		 * The section body: a note on the draggable rail, the seven controls, and a
+		 * way back to the shipped order. State comes from the module-level
+		 * preference store rather than a slot store: the controls and the stylesheet
+		 * must agree on the same value, and a single subscription is enough.
 		 */
-		function ThemeRow(props) {
+		function ThemeSection(props) {
 			const t = props.t;
 			const [state, setState] = React.useState(getPrefs);
 
 			React.useEffect(() => subscribe(setState), []);
 
 			return h("div", { className: "dml-wrap" }, [
+				h("div", { className: "dml-note", key: "note" }, t("navDesc")),
 				h(Row, {
 					key: "layout",
 					title: t("layout"),
@@ -1044,7 +1415,46 @@ window.__ModuleLoader__.load({
 						onChange: (next) => update({ rowTime: next }),
 					}),
 				}),
+				h(Row, {
+					key: "navReset",
+					title: t("navReset"),
+					description: t("navResetDesc"),
+					children: h(
+						"button",
+						{
+							type: "button",
+							className: "dml-fallback",
+							onClick: resetNavOrder,
+						},
+						t("navResetAction")
+					),
+				}),
 			]);
+		}
+
+		/**
+		 * The rail glyph. Drawn rather than borrowed from `ui-primitives`: a list
+		 * slot may only render what it is given, and a crescent reads as this
+		 * plugin at 16px where a gear would not.
+		 */
+		function NavIcon({ size }) {
+			const px = typeof size === "number" ? size : 16;
+			return h(
+				"svg",
+				{
+					width: px,
+					height: px,
+					viewBox: "0 0 16 16",
+					fill: "none",
+					"aria-hidden": "true",
+				},
+				h("path", {
+					d: "M13.4 9.9A5.6 5.6 0 0 1 6.1 2.6a5.9 5.9 0 1 0 7.3 7.3Z",
+					stroke: "currentColor",
+					"stroke-width": 1.4,
+					"stroke-linejoin": "round",
+				})
+			);
 		}
 
 		// --- Plugin --------------------------------------------------------------
@@ -1085,6 +1495,10 @@ window.__ModuleLoader__.load({
 				"dsh-moonstyle: row copy"
 			);
 
+			// Bound after the namespace is registered, so the very first render
+			// already resolves instead of showing the key.
+			const t = ctx.locale.bind(NS);
+
 			ctx.effect(() => {
 				document.addEventListener("click", onSectionLabelClick, true);
 				return () => document.removeEventListener("click", onSectionLabelClick, true);
@@ -1095,17 +1509,57 @@ window.__ModuleLoader__.load({
 				return () => document.removeEventListener("keydown", onArrowKey);
 			}, "dsh-moonstyle: arrow-key session switching");
 
-			ctx.slots.inject("settings.general.item", () =>
+			// A section of its own instead of a row inside 通用: seven controls do not
+			// belong at the bottom of someone else's page, and a section is the only
+			// thing the shell puts in the nav rail.
+			ctx.slots.inject("settings.section", () =>
 				ctx.slots.register(
 					{
-						name: "settings.general.item",
+						name: "settings.section",
 						id: "moonstyle",
-						order: 12,
+						// After every shipped section (general is 0, archived-sessions is
+						// in the tens): appending is the least surprising default.
+						order: 50,
+						label: () => t("nav"),
 						locale: NS,
 					},
-					ThemeRow
+					ThemeSection
 				)
 			);
+
+			ctx.slots.inject("settings.section.icon", () =>
+				ctx.slots.register(
+					{
+						name: "settings.section.icon",
+						id: "moonstyle",
+						locale: NS,
+					},
+					NavIcon
+				)
+			);
+
+			// The rail is the shell's DOM, so the order lives in a delegated drag
+			// plus a re-paint whenever the shell rebuilds the rows.
+			ctx.effect(() => {
+				// Same sort the shell applies before rendering, so index i here is row
+				// i there. `Array#sort` is stable, and that is what makes it hold.
+				navIdsFn = () =>
+					ctx.slots
+						.entries("settings.section")
+						.slice()
+						.sort((a, b) => (a.options.order ?? 0) - (b.options.order ?? 0))
+						.map((entry) => entry.options.id ?? "");
+				const stopDrag = installNavDrag();
+				const stopWatch = watchNav();
+				const unsubscribe = subscribeNav(paintNav);
+				paintNav();
+				return () => {
+					unsubscribe();
+					stopWatch();
+					stopDrag();
+					navIdsFn = null;
+				};
+			}, "dsh-moonstyle: draggable settings rail");
 		}
 
 		exports.inject = inject;
