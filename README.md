@@ -50,7 +50,19 @@
 
 ## 安装
 
-在 profile 的 `package.json`（通常是 `~/.dsh/profiles/<名字>/package.json`）里加依赖并登记 bundle：
+一条命令，从 GitHub 直装（pnpm 拉取，`dsh` 会自动登记 bundle）：
+
+```bash
+dsh plugin --profile desktop add github:JokesLin/dsh-moonstyle
+```
+
+`desktop` 换成你自己的 profile 名（`ls ~/.dsh/profiles` 可以看到）。不放心移动的分支，可以钉死提交：
+
+```bash
+dsh plugin --profile desktop add github:JokesLin/dsh-moonstyle#<commit-sha>
+```
+
+**手动装。** 在 profile 的 `package.json`（通常是 `~/.dsh/profiles/<名字>/package.json`）里加依赖并登记 bundle：
 
 ```json
 {
