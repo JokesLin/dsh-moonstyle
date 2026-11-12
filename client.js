@@ -930,32 +930,52 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** Id of the row at `index`, or a positional placeholder if the lists differ. */
-		function rowId(ids, index) {
-			return ids[index] ?? "#" + index;
+		/**
+		 * Zip the slot's entries onto the rendered rows and stamp each row with its
+		 * section id.
+		 *
+		 * Pure by design — it never moves a row — so a drag can call it mid-gesture,
+		 * which `paintNav` deliberately refuses to do. Returns null when the two
+		 * lists disagree; a DOM one frame behind the registry must not be guessed at,
+		 * or every row would keep a neighbour's id.
+		 */
+		function stampNav() {
+			if (typeof document === "undefined") return null;
+			const rows = navRows();
+			if (rows.length === 0) return null;
+			const ids = shellSectionIds();
+			// The slot rejects an entry without an id, so the count is the only thing
+			// that can disagree, and it does so while the shell rebuilds the rail.
+			if (ids.length !== rows.length) return null;
+			rows.forEach((row, index) => {
+				if (row.getAttribute(NAV_ATTR) !== ids[index]) row.setAttribute(NAV_ATTR, ids[index]);
+			});
+			return { rows, ids };
 		}
 
 		/**
-		 * Stamp every row with its section id and replay the stored order. Rows the
-		 * stored order does not mention (a section added since it was saved) keep
-		 * their shell position, after the ones it does.
+		 * Stamp the rows and replay the stored order. Rows the stored order does not
+		 * mention (a section added since it was saved) keep their shell position,
+		 * after the ones it does.
+		 *
+		 * Returns false when nothing was painted, which is the normal answer while a
+		 * drag is in flight and also the answer when the slot could not be read.
 		 */
 		function paintNav() {
-			if (typeof document === "undefined") return;
-			if (navDragging) return;
-			const rows = navRows();
-			if (rows.length === 0) return;
-			const ids = shellSectionIds();
+			// A repaint now would move the row out from under the cursor.
+			if (navDragging) return false;
+			const stamped = stampNav();
+			if (stamped === null) return false;
 			const known = new Map();
 			navOrder.forEach((id, index) => {
 				if (!known.has(id)) known.set(id, index);
 			});
-			rows.forEach((row, index) => {
-				const id = rowId(ids, index);
-				if (row.getAttribute(NAV_ATTR) !== id) row.setAttribute(NAV_ATTR, id);
-				const rank = known.has(id) ? known.get(id) : navOrder.length + index;
-				row.style.order = String(rank);
+			let displaced = 0;
+			stamped.rows.forEach((row, index) => {
+				const id = stamped.ids[index];
+				row.style.order = known.has(id) ? String(known.get(id)) : String(navOrder.length + displaced++);
 			});
+			return true;
 		}
 
 		/** Rows in the order they are currently painted, i.e. the visual order. */
@@ -1054,15 +1074,23 @@ window.__ModuleLoader__.load({
 				if (!(row instanceof HTMLElement)) return;
 				const list = row.parentElement;
 				if (list === null) return;
+				// Stamp now rather than trusting the last paint: the shell rebuilds a
+				// row whenever it likes (hover, selection, a locale change), and a
+				// fresh row carries no id. This is the stamp-only step, so it still
+				// works mid-gesture.
+				stampNav();
 				const rows = visualRows(navRows().filter((item) => item.parentElement === list));
 				if (rows.length < 2) return;
+				const idsAtStart = new Map();
+				rows.forEach((item) => idsAtStart.set(item, item.getAttribute(NAV_ATTR) ?? ""));
 				drag = {
 					row,
 					list,
 					rows,
+					idsAtStart,
 					// Captured before the drag so a cancelled drag can be told apart
 					// from one that actually moved a row.
-					before: rows.map((item) => item.getAttribute(NAV_ATTR) ?? "").join("\n"),
+					before: rows.map((item) => idsAtStart.get(item)).join("\n"),
 					startX: event.clientX,
 					startY: event.clientY,
 					moved: false,
@@ -1073,12 +1101,59 @@ window.__ModuleLoader__.load({
 				attachMove();
 			};
 
+			/**
+			 * Re-attach a drag to the current rows after the shell rebuilt them.
+			 *
+			 * The shell re-renders the rail on hover and on selection, so a rebuild
+			 * mid-drag is routine, not exceptional. Giving up there would make the
+			 * gesture look like it worked and then silently discard it — the row
+			 * moves under the cursor, then snaps back on release. Instead the rows
+			 * are found again by their section ids, which survive the rebuild, and
+			 * the drag carries on with its new nodes.
+			 *
+			 * Returns false when the rail is gone or has changed shape, which is a
+			 * real reason to end the gesture.
+			 */
+			const reattach = () => {
+				if (drag === null) return false;
+				if (drag.row.isConnected && drag.rows.every((row) => row.isConnected)) return true;
+				const list = drag.list;
+				if (!list.isConnected) return false;
+				stampNav();
+				const fresh = navRows().filter((row) => row.parentElement === list);
+				if (fresh.length !== drag.rows.length) return false;
+				const byId = new Map(fresh.map((row) => [row.getAttribute(NAV_ATTR) ?? "", row]));
+				// The order the user has reached so far, by id; each id must resolve to
+				// a live row, because a partial match would reorder a subset and leave
+				// the rest wherever they happened to fall. `idsAtStart` is the fallback
+				// for a rebuild that lands before the first move, when the rows carry
+				// no stamp of their own yet.
+				const order = drag.rows.map(
+					(row) => row.getAttribute(NAV_ATTR) || drag.idsAtStart.get(row) || ""
+				);
+				if (order.some((id) => id === "" || !byId.has(id))) return false;
+				const dragged = drag.idsAtStart.get(drag.row) ?? drag.row.getAttribute(NAV_ATTR) ?? "";
+				if (dragged === "" || !byId.has(dragged)) return false;
+				const nodes = order.map((id) => byId.get(id));
+				const next = byId.get(dragged);
+				drag.row = next;
+				drag.rows = nodes;
+				drag.idsAtStart = new Map(nodes.map((row) => [row, row.getAttribute(NAV_ATTR) ?? ""]));
+				// Fresh nodes carry no `style.order`, so replay the order this drag has
+				// already reached — otherwise the rebuild would visibly undo the move
+				// even though the gesture is still alive.
+				nodes.forEach((row, index) => {
+					row.style.order = String(index);
+				});
+				next.classList.add("dml-nav-grab");
+				return true;
+			};
+
 			const onPointerMove = (event) => {
 				if (drag === null) return;
-				// The shell can rebuild the rows mid-drag (a locale or slot change).
-				// The captured nodes would then be detached, and reordering them
-				// would paint an order nobody can see.
-				if (!drag.row.isConnected || drag.rows.some((row) => !row.isConnected)) {
+				// A rebuild detaches the captured nodes; pick the new ones up and keep
+				// dragging rather than dropping the gesture on the floor.
+				if (!reattach()) {
 					onPointerUp();
 					return;
 				}
@@ -1134,12 +1209,18 @@ window.__ModuleLoader__.load({
 				finished.row.classList.remove("dml-nav-grab");
 				document.body.classList.remove(NAV_DRAGGING);
 				if (!finished.moved) return;
-				const ids = finished.rows.map((row) => row.getAttribute(NAV_ATTR) ?? "");
+				// Read the id from the map taken at press time. A row rebuilt during
+				// the drag is a new node and would carry no attribute; its recorded
+				// slot is still the right answer. Re-stamping first means an
+				// attribute lost mid-drag is recovered rather than read as empty.
+				stampNav();
+				const ids = finished.rows.map(
+					(row) => finished.idsAtStart.get(row) ?? row.getAttribute(NAV_ATTR) ?? ""
+				);
 				// A drag that ends back where it started changes nothing, so it must
 				// not save an order — and must not eat the click either, or the row
 				// would feel dead after a cancelled drag.
 				if (ids.join("\n") === finished.before) {
-					paintNav();
 					return;
 				}
 				// The pointerup that ends a drag is followed by a click on the row,
@@ -1148,8 +1229,14 @@ window.__ModuleLoader__.load({
 				window.setTimeout(() => {
 					justDragged = false;
 				}, 0);
-				if (ids.every((id) => id !== "")) setNavOrder(ids);
-				else paintNav();
+				// Save only when every row is identified. Storing a positional guess
+				// would scramble the rail later, on the next open or as soon as
+				// another plugin registers a section. When a row cannot be named, the
+				// drop still stands for this session — the rows already carry the new
+				// `style.order` — and the next successful paint makes it permanent.
+				// What must never happen is falling back to the shell order: that
+				// undoes the drop the user just made, which is the bug this replaced.
+				if (ids.every((id) => id !== "" && !id.startsWith("#"))) setNavOrder(ids);
 			};
 
 			const onClickCapture = (event) => {
