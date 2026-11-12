@@ -723,6 +723,26 @@ window.__ModuleLoader__.load({
 			'[data-dml-expanding] button[class*="_sessionOverflowButton"]{visibility:hidden !important}';
 
 		/**
+		 * The folder row above a group of sessions is the sidebar's heading, so it
+		 * gets heading type: 16px at semibold, against the session rows' 14px
+		 * regular. The shell writes `font-size:14px` for `_title` once, shared by
+		 * both rows, which is why the two levels currently read as equals — two
+		 * attribute selectors outrank that single class without `!important`.
+		 *
+		 * `_renameInput` is included so renaming a group does not shrink the text
+		 * back to session size mid-edit.
+		 */
+		const PROJECT_CSS = [
+			'[class*="_projectRow"] [class*="_title"],',
+			'[class*="_projectRow"] [class*="_renameInput"] {',
+			"  font-size:16px;",
+			"  line-height:22px;",
+			"  font-weight:600;",
+			"  letter-spacing:-0.01em;",
+			"}",
+		].join("\n");
+
+		/**
 		 * Trim the sidebar title to the chosen character count. CSS, not text
 		 * surgery: an exact count would need an observer fighting every re-render,
 		 * while `em` is one CJK glyph at the row's own size. Latin names fit a few
@@ -778,6 +798,7 @@ window.__ModuleLoader__.load({
 				inkCss(current),
 				ROW_CSS,
 				GHOST_CSS,
+				PROJECT_CSS,
 				titleCss(current),
 				rowTimeCss(current),
 			]
