@@ -1,0 +1,60 @@
+{
+  "name": "dsh-moonstyle",
+  "version": "1.0.0",
+  "description": "轻量月光配色主题：冷白偏蓝内容区 + 深海军蓝深色模式 + 圆润字体。用户消息靛蓝白字、助手回复套气泡；设置里可切消息形态、月光/原生配色、侧栏精简、侧栏时间的显隐，正文与侧栏字重各自无级可调，侧栏标题长度 4–12 字无级可调；点侧栏「工作区」展开已归档会话，上下方向键切换会话。强调色不动。",
+  "license": "MIT",
+  "author": {
+    "name": "Joke Lin",
+    "url": "https://github.com/JokesLin"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JokesLin/dsh-moonstyle.git"
+  },
+  "homepage": "https://github.com/JokesLin/dsh-moonstyle#readme",
+  "bugs": {
+    "url": "https://github.com/JokesLin/dsh-moonstyle/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "theme",
+    "cordis",
+    "plugin",
+    "lightweight",
+    "moonlight",
+    "settings"
+  ],
+  "private": false,
+  "type": "module",
+  "main": "index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "assets/preview.png"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-theme"
+      ]
+    }
+  }
+}

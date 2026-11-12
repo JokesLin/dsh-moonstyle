@@ -1,0 +1,30 @@
+# dsh-moonstyle — the loader entries this package contributes.
+#
+# 1. Its own entry: the browser half is picked up through the package's
+#    dsh.client declaration.
+- insert:
+    - id: dsh-moonstyle
+      name: 'dsh-moonstyle'
+
+# 2. Session titles: nine characters, not the shell's ten.
+#
+#    The sidebar's own slider decides how much of a title is *shown*; the host
+#    decides how much may be *written*. The ceiling is 12 CJK characters
+#    (36 UTF-8 bytes), which is the slider's top end — a title the model writes
+#    longer than that is cut here, a shorter one is shown whole. Both entries
+#    are replaced whole (the loader does not deep-merge), so every required
+#    field is repeated.
+- id: session-title
+  name: '@deepseek-ai/dsh-session-title'
+  config:
+    fallbackMaxWords: 5
+    fallbackMaxBytes: 36
+    maxTitleBytes: 36
+- id: session-title-llm
+  name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
+  config:
+    targetWords: 5
+    targetCjkCharacters: 12
+    maxInputBytes: 4096
+    maxOutputTokens: 4096
+    timeoutMs: 60000
