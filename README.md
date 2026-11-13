@@ -107,6 +107,8 @@ dsh plugin --profile desktop add github:JokesLin/dsh-moonstyle#<commit-sha>
 - 设置侧栏的拖拽靠宿主行上那层 `[class*="_navCell"]` 的类名哈希与 `ctx.slots.entries("settings.section")` 的顺序对齐。宿主如果改了类名或打乱了注册顺序，拖拽会安静地失效——设置页本身照常能用；点「恢复默认顺序」也不会丢东西。
 - 已在 DSH `0.2.2-rc.1` 与 `0.2.2-rc.2` 上核对过：18 个宿主类名、25 个主题令牌、`settings.section` / `settings.section.icon` 两个槽位与 `entries()` 的 `options.id` / `options.order` 结构都未变。rc.2 只是把 CSS Module 的类名哈希从 `_77Pn0W_` 换成了 `VOzbGW_`，前缀后的语义名（`_navCell` 等）仍在，所以子串选择器照常命中。
 - `--dsw-specific-sidebar-nav-item-hover` 是我自己补的一个令牌，宿主从未定义过（rc.1 里也没有）；设置它无害，但不会有任何可见效果。
+- 装了 [ds-bot](https://www.npmjs.com/package/ds-bot)（bot 模式）时，气泡的形状和文字色全部让给 ds-bot：它以 `shadow("conversation.chat.node", {key:"assistant-step"})` 接管助手消息，在里面画自己的 `.bt-bubble`，用户侧也用 `--bt-user` / `--bt-user-ink` 重绘。插件如果继续在 `assistant-step` 流程项上画面板，就会在大气泡里再套一个，逐层叠起来。
+  判据是 `body[data-bt-layout]`（ds-bot 装载时写入、卸载时删除），写在 CSS 里而不是 JS 分支：ds-bot 比本插件的样式表晚挂载，构建期判断会永远看不到它。没装 ds-bot 时该属性不存在，所有规则行为与原来一致。
 
 ## 许可
 

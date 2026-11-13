@@ -433,11 +433,29 @@ window.__ModuleLoader__.load({
 				'[data-chat-flow-kind="question-reply"] [class*="_bubble"]',
 				'[data-chat-flow-kind="command-input"] [class*="_bubble"]',
 			];
+
+			// ds-bot claims both sides of the conversation. Its own rule for these
+			// same three selectors writes `background:var(--bt-user)` plus
+			// `color:var(--bt-user-ink)`, and it renders the assistant reply as a
+			// `.bt-bubble` with its own surface. So wherever ds-bot is mounted it
+			// owns the bubble's shape and its ink: repainting either from here
+			// would either nest a second box behind its bubble (the assistant
+			// panel below) or, for the user side, override its ink pair with a
+			// colour chosen for a surface it is no longer painting.
+			//
+			// Keying on `body[data-bt-layout]` — written by ds-bot on install and
+			// deleted on teardown — has to happen in CSS rather than here: ds-bot
+			// mounts after this sheet is built, so a branch at build time would
+			// decide before there is anything to look at. With no bot installed
+			// the attribute is absent and every rule below behaves as before.
+			const BOT_OWNS_BUBBLES = 'body:not([data-bt-layout]) ';
+			const guard = (selector) => BOT_OWNS_BUBBLES + selector;
+
 			const userInk = [
-				userBubbleSelectors.map((s) => s + ",").join("\n").replace(/,$/, "{"),
+				userBubbleSelectors.map((s) => guard(s) + ",").join("\n").replace(/,$/, "{"),
 				"  color:var(--dml-user-ink) !important;",
 				"}",
-				userBubbleSelectors.map((s) => s + " *,").join("\n").replace(/,$/, "{"),
+				userBubbleSelectors.map((s) => guard(s + " *") + ",").join("\n").replace(/,$/, "{"),
 				"  color:var(--dml-user-ink) !important;",
 				"}",
 			].join("\n");
@@ -448,7 +466,10 @@ window.__ModuleLoader__.load({
 			// label-primary so dark-on-light survives the paint removal.
 			const flatUser = current.layout === "flat"
 				? [
-					[...userBubbleSelectors, ...userBubbleSelectors.map((s) => s + " *")].join(",\n") + "{",
+					[
+						...userBubbleSelectors.map(guard),
+						...userBubbleSelectors.map((s) => guard(s + " *")),
+					].join(",\n") + "{",
 					"  background:none !important;",
 					"  color:var(--dsw-alias-label-primary) !important;",
 					"}",
@@ -465,6 +486,10 @@ window.__ModuleLoader__.load({
 			// to zero height. A background + padding here would still paint a box on
 			// that zero-height element — a tall thin sliver of panel colour hanging
 			// under a folded turn. Gating on content keeps folded turns clean.
+			// The assistant side of the same hand-off: ds-bot shadows this very
+			// flow item's slot and draws a `.bt-bubble` with its own surface,
+			// radius and padding. A panel on the enclosing element would sit
+			// *behind* that bubble — a second, larger box around the same text.
 			const assistantPanel = current.layout === "flat"
 				? ""
 				: [
@@ -476,7 +501,7 @@ window.__ModuleLoader__.load({
 					// (`.flowItem:is(:empty,:has(>[data-slot]:empty)){height:0}`),
 					// inverted. Both halves are needed: an empty slot anchor leaves a
 					// non-empty parent behind, and a hidden member has no anchor at all.
-					'[data-chat-flow-kind="assistant-step"][data-chat-group-part="response"]:not(:empty):not(:has(>[data-slot="conversation.chat.node"]:empty)):not([data-turn-process-hidden]){',
+					`${BOT_OWNS_BUBBLES}[data-chat-flow-kind="assistant-step"][data-chat-group-part="response"]:not(:empty):not(:has(>[data-slot="conversation.chat.node"]:empty)):not([data-turn-process-hidden]){`,
 					"  background:var(--dml-assistant-bg) !important;",
 					"  border-radius:18px !important;",
 					"  padding:7px 12px !important;",
