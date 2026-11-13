@@ -105,6 +105,8 @@ dsh plugin --profile desktop add github:JokesLin/dsh-moonstyle#<commit-sha>
 - 浏览器半边声明在 `package.json` 的 `dsh.client`；`index.js` 为空，只作 bundle 占位。
 - 设置行用 `@deepseek-ai/dsh-client-ui-primitives` 的 `SegmentedControl`，该模块缺失时降级成普通按钮，不连累插件。
 - 设置侧栏的拖拽靠宿主行上那层 `[class*="_navCell"]` 的类名哈希与 `ctx.slots.entries("settings.section")` 的顺序对齐。宿主如果改了类名或打乱了注册顺序，拖拽会安静地失效——设置页本身照常能用；点「恢复默认顺序」也不会丢东西。
+- 已在 DSH `0.2.2-rc.1` 与 `0.2.2-rc.2` 上核对过：18 个宿主类名、25 个主题令牌、`settings.section` / `settings.section.icon` 两个槽位与 `entries()` 的 `options.id` / `options.order` 结构都未变。rc.2 只是把 CSS Module 的类名哈希从 `_77Pn0W_` 换成了 `VOzbGW_`，前缀后的语义名（`_navCell` 等）仍在，所以子串选择器照常命中。
+- `--dsw-specific-sidebar-nav-item-hover` 是我自己补的一个令牌，宿主从未定义过（rc.1 里也没有）；设置它无害，但不会有任何可见效果。
 
 ## 许可
 
